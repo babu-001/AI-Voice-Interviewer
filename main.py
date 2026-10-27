@@ -2,7 +2,6 @@ import os, io, json, uuid, sqlite3, datetime
 from xml.sax.saxutils import escape
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import fitz
 from openai import OpenAI
@@ -170,4 +169,9 @@ def report(sid: str):
 def delete(sid: str):
     db.execute("delete from s where id=?", (sid,)); db.commit(); return {"deleted": True}
 
-app.mount("/", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "..", "frontend"), html=True), name="ui")
+@app.get("/")
+def home():
+    return {
+        "message": "AI Voice Interviewer API is running",
+        "docs": "/docs"
+    }
