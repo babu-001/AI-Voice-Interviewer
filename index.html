@@ -1,0 +1,116 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Voice Interviewer</title>
+<style>
+body{margin:0;font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0}
+.wrap{max-width:720px;margin:0 auto;padding:24px;text-align:center}
+.robot{font-size:96px;display:inline-block}.robot.talk{animation:p .6s infinite alternate}
+@keyframes p{to{transform:scale(1.12)}}
+.bubble{background:#1e293b;border-radius:14px;padding:16px;margin:12px 0;font-size:18px}
+.card{background:#1e293b;border-radius:14px;padding:16px;margin:12px 0;text-align:left}
+button{background:#6366f1;color:#fff;border:0;border-radius:10px;padding:10px 18px;font-size:16px;cursor:pointer;margin:4px}
+button:disabled{opacity:.5;cursor:not-allowed}button.rec{background:#dc2626}button.alt{background:#334155}
+textarea{width:100%;box-sizing:border-box;height:120px;border-radius:10px;padding:10px;font-size:16px;background:#0f172a;color:#e2e8f0;border:1px solid #475569}
+.bar{height:8px;background:#334155;border-radius:4px}.bar>div{height:8px;background:#6366f1;border-radius:4px}
+.err{background:#7f1d1d;padding:10px;border-radius:10px;margin:8px 0}.big{font-size:48px;font-weight:700}
+ul{margin:4px 0;padding-left:20px}
+</style></head><body><div id="root"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+<script>
+const {useState,useRef}=React, html=htm.bind(React.createElement);
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+async function api(u,o){const r=await fetch(u,o);if(!r.ok){let m=r.statusText;try{m=(await r.json()).detail||m}catch{}throw new Error(m)}return r}
+const LBL={intro:"Introduction",skills:"Technical Skills",projects:"Projects"};
+
+function App(){
+  const [stage,setStage]=useState("welcome"),[msg,setMsg]=useState(""),[talk,setTalk]=useState(false);
+  const [sess,setSess]=useState(null),[i,setI]=useState(0),[text,setText]=useState(""),[fb,setFb]=useState(null);
+  const [rec,setRec]=useState(false),[busy,setBusy]=useState(false),[err,setErr]=useState(""),[res,setRes]=useState(null);
+  const recog=useRef(null),base=useRef("");
+
+  function say(t,done){setMsg(t);setTalk(true);
+    if(!window.speechSynthesis){setTalk(false);return done&&done()}
+    speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);
+    u.onend=u.onerror=()=>{setTalk(false);done&&done()};speechSynthesis.speak(u)}
+
+  function start(){setStage("upload");
+    say("Hello! Welcome to your AI mock interview. Please upload your resume to begin your personalized interview.",
+        ()=>say("Please upload your resume here."))}
+
+  async function upload(e){const f=e.target.files[0];setErr("");if(!f)return;
+    if(!f.name.toLowerCase().endsWith(".pdf"))return setErr("Please choose a PDF file.");
+    if(f.size>5*1024*1024)return setErr("File is larger than 5 MB.");
+    setBusy(true);setMsg("Reading your resume and preparing questions...");
+    try{const fd=new FormData();fd.append("file",f);
+      const s=await (await api("/api/resume",{method:"POST",body:fd})).json();
+      setSess(s);setStage("interview");ask(s.questions,0,true)}
+    catch(x){setErr(x.message);setMsg("Please upload your resume here.")}
+    setBusy(false)}
+
+  function ask(qs,n,first){setI(n);setText("");setFb(null);setErr("");
+    const q=qs[n],intro=first?"Thank you. Let's begin with the introduction. ":(n&&qs[n-1].section!==q.section?"Now moving to the next section. ":"Next question. ");
+    say(intro+q.question)}
+
+  function toggleMic(){
+    if(rec){recog.current&&recog.current.stop();return}
+    if(!SR)return setErr("Speech recognition isn't supported in this browser. Use Chrome/Edge, or type your answer.");
+    speechSynthesis.cancel();base.current=text;const r=new SR();recog.current=r;r.lang="en-US";r.continuous=true;r.interimResults=true;
+    r.onresult=ev=>{let s="";for(const x of ev.results)s+=x[0].transcript+" ";setText((base.current+" "+s).trim())};
+    r.onerror=ev=>{setErr(ev.error==="not-allowed"?"Microphone permission denied. Allow it in your browser, or type your answer.":"Speech error: "+ev.error);setRec(false)};
+    r.onend=()=>setRec(false);r.start();setRec(true)}
+
+  async function submit(){if(busy)return;setBusy(true);setErr("");recog.current&&rec&&recog.current.stop();
+    try{setFb(await (await api("/api/answer",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({session_id:sess.session_id,question_id:i,transcript:text})})).json())}
+    catch(x){setErr(x.message)}setBusy(false)}
+
+  async function next(){const qs=sess.questions;
+    if(i+1<qs.length)return ask(qs,i+1);
+    setBusy(true);setMsg("Evaluating your interview...");
+    try{const r=await (await api("/api/result/"+sess.session_id)).json();setRes(r);setStage("result");
+      say("Your interview is complete. Your total score is "+r.total+" out of 100.")}
+    catch(x){setErr(x.message)}setBusy(false)}
+
+  async function download(){try{const b=await (await api("/api/report/"+sess.session_id)).blob();
+    const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="interview_report.pdf";a.click()}
+    catch(x){setErr("PDF download failed: "+x.message)}}
+
+  async function restart(){speechSynthesis.cancel();
+    if(sess)await fetch("/api/session/"+sess.session_id,{method:"DELETE"}).catch(()=>{});
+    setSess(null);setRes(null);setStage("welcome");setMsg("");setErr("")}
+
+  const q=sess&&sess.questions[i];
+  return html`<div class="wrap">
+    <h1>AI Voice Interviewer</h1>
+    <div class=${"robot "+(talk?"talk":"")}>🤖</div>
+    ${msg&&html`<div class="bubble">${msg}</div>`}
+    ${err&&html`<div class="err">${err}</div>`}
+    ${stage==="welcome"&&html`<button onClick=${start}>Start Interview (enable voice)</button>`}
+    ${stage==="upload"&&html`<div class="card"><input type="file" accept="application/pdf" onChange=${upload} disabled=${busy}/>
+      ${busy&&html`<p>⏳ Processing resume...</p>`}</div>`}
+    ${stage==="interview"&&q&&html`<div>
+      <div class="bar"><div style=${{width:((i+(fb?1:0))/sess.questions.length*100)+"%"}}></div></div>
+      <p>${LBL[q.section]} · Question ${i+1} of ${sess.questions.length} · ${q.max} marks</p>
+      <button class="alt" onClick=${()=>say(q.question)}>🔊 Repeat question</button>
+      ${!fb&&html`<div class="card">
+        <button class=${rec?"rec":""} onClick=${toggleMic}>${rec?"⏹ Stop recording":"🎤 Record answer"}</button>
+        ${rec&&html`<span>🔴 Recording...</span>`}
+        <p>Your transcript (edit if the speech was misheard):</p>
+        <textarea value=${text} onChange=${e=>setText(e.target.value)} placeholder="Your answer appears here..."></textarea>
+        <button disabled=${busy||!text.trim()} onClick=${submit}>${busy?"Evaluating...":"Submit answer"}</button>
+        <button class="alt" onClick=${()=>{setText("");base.current=""}}>Clear / answer again</button></div>`}
+      ${fb&&html`<div class="card"><b>Score: ${fb.marks} / ${fb.max}</b><p>${fb.reason}</p>
+        <b>Correct:</b><ul>${fb.correct.map(x=>html`<li>${x}</li>`)}</ul>
+        <b>Missing:</b><ul>${fb.missing.map(x=>html`<li>${x}</li>`)}</ul>
+        <b>Better answer:</b><p>${fb.improved}</p>
+        <button disabled=${busy} onClick=${next}>${i+1<sess.questions.length?"Next question":"Finish & see results"}</button></div>`}
+    </div>`}
+    ${stage==="result"&&res&&html`<div class="card"><div class="big">${res.total} / 100</div>
+      ${Object.keys(res.sections).map(k=>html`<p>${LBL[k]}: <b>${res.sections[k]} / ${res.limits[k]}</b></p>`)}
+      ${[["Strengths","strengths"],["Weaknesses","weaknesses"],["Suggestions","suggestions"],["Preparation plan","preparation_plan"]].map(([h,k])=>
+        html`<b>${h}</b><ul>${(res[k]||[]).map(x=>html`<li>${x}</li>`)}</ul>`)}
+      <button onClick=${download}>📄 Download PDF report</button><button class="alt" onClick=${restart}>Start new interview</button></div>`}
+  </div>`}
+ReactDOM.createRoot(document.getElementById("root")).render(html`<${App}/>`);
+</script></body></html>
